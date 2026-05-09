@@ -1,152 +1,189 @@
-# The AI Stack Is Being Rebuilt From the Bottom Up
-### What 10 LinkedIn posts reveal about where the real leverage is in 2026
+# The AI Stack Is on Fire. Here's What Actually Matters.
 
-*A signal synthesis across inference infrastructure, agent tooling, model architecture, geopolitics, and security*
-
----
-
-## Introduction
-
-Scroll through the AI discourse on any given week and you will find a lot of noise — product launches dressed as breakthroughs, benchmark flexing, and hype cycles. But embedded in that noise are genuine signals about where the field is actually moving. The 10 posts analysed here, taken together, tell a coherent story: **the AI supply chain is being systematically rearchitected, layer by layer, from silicon to policy.** This post clusters those signals, draws consequences, and offers concrete things worth testing.
+*May 2026 — synthesised from 10 LinkedIn signals*
 
 ---
 
-## Layer 1 — Memory & Inference Infrastructure: The KV Cache Is the New Bottleneck
+Fall in love with the problem. Not the model. Not the benchmark. The problem.
 
-*Source posts: Nikolas Markou, Yatin Arora*
+And right now the problem is this: **we are building on top of infrastructure that is fundamentally miscalibrated.** Memory is the bottleneck. Identity is missing. The tooling is a mess. Europe is asleep. And the cost curve is about to break in ways most teams haven't modelled.
 
-These two posts circle the same technical truth from different angles: the biggest constraint in production AI right now is not model quality — it is memory. Specifically, the **KV (key-value) cache**, the data structure that stores what every previous token has said so future tokens do not have to recompute it.
-
-The math is stark. A 70B model at 128K context needs roughly 40 GB of KV cache — more than the model weights themselves at 4-bit quantisation (35 GB). Meanwhile DeepSeek's new hybrid attention architecture cuts the cache to just 7–10% of its original size while maintaining the same million-token context window, at a price of $0.14 per million tokens — roughly 100x cheaper than comparable APIs.
-
-The serving stack has converged on five solutions: **GQA** (groups query heads to share K/V, used in Llama 3, 8x reduction), **MLA** (DeepSeek's latent compression, another 4x on top), **sliding-window attention** (caps cache at a fixed token window), **PagedAttention** (vLLM's block allocator, drops fragmentation from ~50% to under 5%), and **prompt caching** (reusing shared prefix K/V across users). Layering INT8 quantisation on top of any of these can multiply concurrent users by ~5x on the same H100.
-
-**Consequences:**
-- "Supports 1M context" is meaningless without knowing the memory architecture behind it. The cache compression ratio is the real signal.
-- Prompt caching is quietly one of the most economically significant features in modern APIs. Every enterprise with a large, stable system prompt and high request volume is leaving money on the table by not structuring prompts to maximise prefix reuse.
-- The "Claude limits" debate that circulated recently was fundamentally a proxy argument about KV cache economics.
-
-**Things to test:**
-- Measure your own KV cache cost. Log what proportion of your token spend is prompt vs. completion. If prompt tokens dominate, you are a prime candidate for prefix caching.
-- Test GQA vs. MLA models head to head at long context lengths (32K+). Compare memory footprint and throughput, not just output quality.
-- Experiment with context window structuring: put stable content at the front, dynamic content at the end. Measure whether cache hit rates and latency improve.
+Ten LinkedIn posts this week pointed at the same iceberg from different angles. Here's the synthesis — with the numbers that actually matter.
 
 ---
 
-## Layer 2 — Model Architecture: Recurrence Is Back, Differently
+## Problem 1: You're Paying to Forget
 
-*Source post: Dr. Ashish Bamania*
+**The KV cache is the bill. Everything else is noise.**
 
-The **Hyperloop Transformer** paper ([arXiv:2504.21254](https://arxiv.org/abs/2604.21254)) represents something architecturally interesting: a return to recurrence, but applied across depth rather than time. The architecture divides the model into three blocks — begin, middle, end — and applies the middle block recurrently. Augmented by DeepSeek's **Manifold-Constrained Hyper-Connections (mHC)**, it achieves comparable performance to standard transformers with ~50% fewer parameters.
+Here's the Fermi estimate nobody talks about at demos:
 
-This suggests the field is finding that **depth reuse** (running the same layers multiple times) may be more efficient than **depth accumulation** (stacking more unique layers).
+- 70B model, 80 layers, 64 heads, 128-dim heads, FP16
+- Each token = **320 KB per layer**
+- 128K context = **40 GB of KV cache**
+- Model weights at 4-bit = 35 GB
+- **The cache is bigger than the model**
 
-**Consequences:**
-- Parameter count is becoming a less reliable quality signal. Benchmark on your task, not on the model card.
-- Hybrid architectures mixing attention with recurrent or state-space mechanisms are increasingly competitive — part of the same wave as Mamba, RWKV, and Griffin.
+You're spending more GPU memory on *remembering the conversation* than on *running the intelligence*. That's the wrong ratio. That's the problem.
 
-**Things to test:**
-- When Hyperloop Transformer weights become available, run it against same-parameter-budget standard transformers on your specific domain tasks. Parameter efficiency claims need verification on real workloads.
-- Track mHC as a component — it may become a plug-in improvement the way GQA was.
+The serving stack has been attacking this for two years:
 
----
+- **GQA** (Llama 3): share K/V across query heads → 8x cache reduction, zero quality loss
+- **MLA** (DeepSeek V2/V3): compress K/V into a latent vector → another 4x on top of GQA
+- **PagedAttention** (vLLM): stop wasting ~50% to fragmentation → batch size doubles
+- **Prompt caching** (everyone): one system prompt, a thousand users, compute the prefix once
+- **INT8 KV quantisation**: slap on top of any of the above → 5x concurrent users per H100
 
-## Layer 3 — Multimodal Reasoning: Pointing Instead of Writing
+DeepSeek's new hybrid attention architecture stacks these ideas and hits **7% of the original cache size** at **$0.14 per million tokens**. That's roughly 100x cheaper than comparable frontier APIs. "Supports 1M context" just became a real production number, not a spec sheet fantasy.
 
-*Source post: Mitko Vasilev / OwnYourAI*
+**First principles:** you shouldn't pay to recompute what hasn't changed. Every token's K and V are fixed the moment they're written. Cache them once, reuse forever. The industry is finally living up to this obvious truth.
 
-DeepSeek published (then deleted) a vision paper introducing **spatial markers — points and bounding boxes — directly into the reasoning chain** of multimodal models. Rather than describing what it sees, the model points at it. This addresses the "Reference Gap": natural language is too ambiguous to reliably locate things in dense visual layouts.
-
-The fix achieves benchmark parity with GPT and Claude Sonnet on spatial tasks, at 4:1 visual token KV compression, MIT-licensed, and runnable locally.
-
-**Consequences:**
-- The Reference Gap is not just a vision problem. It maps directly onto code navigation failures: "the auth module" is as spatially ambiguous to an LLM as a region in an image. Structured, bounded references are the code-world equivalent of bounding boxes.
-- Spatial grounding as a reasoning primitive is likely to propagate into other modalities and domains.
-
-**Things to test:**
-- Replace vague natural-language architectural descriptions in your AI context files with precise, structured references: exact file paths, export boundaries, dependency declarations. Measure whether agent accuracy on cross-file tasks improves.
-- When DeepSeek vision weights resurface, test against GPT-4o on dense document understanding tasks (invoices, forms, diagrams).
+**What you should test this week:**
+Put your static content (system prompt, tool definitions, persona) at the front of the context. Put dynamic content (user input, retrieved chunks) at the end. Log your prompt token / completion token ratio. If prompts are >50% of spend, you're leaving money on the table. Check if your provider has prefix caching. Turn it on. Measure the before/after.
 
 ---
 
-## Layer 4 — Agent Tooling: The Interface Wars
+## Problem 2: We're Stacking Layers When We Should Be Looping
 
-*Source posts: Vlad Kuklev / Mirage, Eric Vyacheslav / Sentrux, Werner Bogula / Hardware tiers*
+**50% more parameter efficient. Same quality. How?**
 
-Three posts converge on a single theme: **the tooling layer for AI agents is being actively contested**, and the contestants are proposing radically different interface paradigms.
+New paper: **Hyperloop Transformer** ([arXiv:2504.21254](https://arxiv.org/abs/2604.21254)).
 
-**Mirage** proposes a unified virtual filesystem: every backend (S3, Slack, GitHub, Gmail, Notion, MongoDB, Redis) mounts as a path in a single tree. Agents interact using bash verbs — `cat`, `grep`, `cp`, `ls`. The bet is that LLMs are most fluent in bash because that is where their training data is densest, eliminating MCP sprawl.
+The insight is brutally simple. Instead of stacking 80 unique layers (each with its own weights, each adding to your memory bill), you run the same middle block repeatedly. Begin → loop(middle) → end.
 
-**Sentrux** ([github.com/sentrux/sentrux](https://github.com/sentrux/sentrux)) addresses architectural drift. As agents make edits across sessions, codebases develop cycles, duplicate names, and tangled dependencies. Sentrux runs as an MCP server, scores the repo architecture from 0 to 10,000 across 52 languages, and feeds structural feedback back to the agent mid-session.
+Augmented by DeepSeek's Manifold-Constrained Hyper-Connections, this beats standard transformers at **half the parameter count**.
 
-**Werner Bogula's hardware tier benchmark** reframes the cost conversation: you do not need a Mac Mini (€1,000) to run an agentic workflow. A Raspberry Pi Zero (€20) running Picobot (Go) + remote LLM API handles file management, calendar syncing, and scheduled tasks at 0.5W.
+Fermi check: if a 7B Hyperloop model matches a 13B standard transformer, that's:
+- Half the inference cost
+- Half the memory
+- Same output quality
+- Faster to fine-tune
 
-**Consequences:**
-- The MCP ecosystem is proliferating per-service servers and creating exactly the tool-schema sprawl Mirage bets against. The right abstraction level is genuinely open.
-- Agentic drift is an underappreciated production problem. Most teams think about agent output quality; fewer monitor whether their codebase is becoming harder to work with session by session.
-- The compute tier for personal or small-business agentic workflows is collapsing. Remote LLM APIs + cheap edge hardware may be more reliable than a local LLM on expensive hardware.
+The market has been conditioned to treat parameter count as a quality proxy. It isn't. Never was. Benchmark your task, not the model card.
 
-**Things to test:**
-- Run Sentrux on a codebase that has had significant AI-assisted edits. Score it before and after a structured refactor. Monitor whether the score degrades over the next 10 agent sessions.
-- Test Mirage against your current MCP stack on a workflow touching 3+ services. Measure token count, failure rate, and time to first successful end-to-end run.
-- Try the Picobot pattern: strip your agent implementation to its minimal viable loop. Is it more reliable than your current stack?
+**What to watch:** mHC is appearing in third-party architectures already. It's going to be the next GQA — a component that silently becomes standard while most people don't notice.
 
 ---
 
-## Layer 5 — Security: Two Threats, One Timeframe
+## Problem 3: The Model Can't Point. Teach It To Point.
 
-*Source posts: Ajay Salunkhe / Post-Quantum TLS, Dr. Carsten Stöcker / European Business Wallet*
+**Natural language is fuzzy. Coordinates are exact. Use coordinates.**
 
-Two posts address security infrastructure from different angles that converge on the same tension: **the cost of upgrading trust infrastructure is real, and the cost of not upgrading is larger.**
+DeepSeek published a vision paper. Then deleted it. (It was cloned. It's circulating. The ideas are out.)
 
-Salunkhe's post is a rare practitioner account of what Post-Quantum Cryptography looks like in production. Integrating hybrid TLS (ECDHE + CRYSTALS-Kyber-768) into TLS 1.3 produced a **20–30% increase in handshake RTT** — not from MTU fragmentation, but simply because the Kyber handshake is larger. Public keys + ciphertext + certificates + TLS extensions no longer fit in a small number of packets, forcing multiple TCP segments.
+The problem they solved: multimodal models can *see* fine. They can't *refer* reliably. Ask a model where something is in a dense visual layout and it writes you an essay about it. Then hallucinates. Because words are approximate. Coordinates are not.
 
-Stöcker's post on the European Business Wallet takes the trust problem up several abstraction levels: not just securing connections but verifying *who* is on each end — companies, representatives, machines, AI agents — across borders and sectors.
+Their fix: interleave **bounding boxes and points directly into the reasoning chain** as minimal units of thought. The model doesn't describe the maze — it traces it with its finger.
 
-**Consequences:**
-- PQC is not a future concern. If handshake latency is commercially sensitive in your stack, you need to start measuring PQC overhead now.
-- The DNSSEC interaction (PQC signatures routinely exceeding the 512-byte UDP limit) is a significant infrastructure challenge most teams have not modelled.
-- For AI agents operating autonomously, the identity and delegation problem is unsolved at the infrastructure level. This will become a compliance requirement faster than most teams expect.
+Result: benchmark parity with GPT and Claude Sonnet on spatial tasks. 4:1 visual token compression. MIT license. Runs locally. No cloud required.
 
-**Things to test:**
-- Benchmark PQC handshake overhead in your stack. Set up a TLS 1.3 test environment with Kyber-768 hybrid exchange and measure RTT against your current ECDHE baseline across different network conditions.
-- Audit your AI agent authorisation model. Can you produce a complete audit trail of which human authorised which agent to take which action, with what scope and for what duration?
+**The non-obvious implication:** this is not a vision-only problem. "The auth module" is as spatially ambiguous to an LLM as a region in an image. Your CLAUDE.md or agent context file that says "the auth stuff lives somewhere around /src" is causing exactly the same hallucination pattern as a missing bounding box.
 
----
+**Fermi estimate of the cost:** if your agent is making 3 wrong file choices per session across 100 sessions per week, and each wrong choice costs 5 minutes of developer time to debug — that's **25 hours per week wasted on fuzzy references.** Fix the references. It's a text file change.
 
-## Layer 6 — Geopolitics & Industrial Policy: Europe Is Choosing a Lane
-
-*Source post: Arthur Mensch / Mistral AI*
-
-Mensch, as CEO of Mistral AI, co-signed an op-ed to the European Commission alongside Airbus, ASML, Ericsson, Nokia, SAP, and Siemens. The argument: Europe has the talent, the ecosystems, and the demand to build global technology leaders — but it needs to shift from regulating innovation first to deploying it at scale first.
-
-These are not software companies lobbying for deregulation. Airbus and ASML are deep-industrial hardware companies. The coalition is explicitly framing AI competitiveness as an industrial stack problem, from semiconductors upward — which is where Europe's structural assets actually lie.
-
-**Consequences:**
-- European AI policy is shifting from a defensive posture (AI Act, GDPR) toward an offensive one (EBW, Single Market trust infrastructure, industrial deployment). This creates procurement and partnership opportunities for companies serving regulated, high-assurance B2B use cases.
-- The combination of PQC, EBW, and this op-ed is not coincidental — they are three facets of the same European push toward sovereign, auditable, quantum-safe digital infrastructure.
-- For AI builders, the European industrial stack is an underserved market where trust, provenance, and auditability matter more than raw benchmark performance.
-
-**Things to consider:**
-- Evaluate whether your architecture is compatible with the EBW credential model — can your system accept verifiable organisational identity and delegation credentials as first-class inputs?
-- Track the NIST PQC standards adoption curve and the EBW political timeline (agreement targeted end of 2026) as forcing functions for your security roadmap.
+**What to test:** replace every vague noun in your agent context files with a precise filesystem path and explicit dependency declaration. Run 10 agent sessions before and after. Count the cross-file errors. Report back.
 
 ---
 
-## The Bigger Picture: A Supply Chain View
+## Problem 4: Your Agent Tooling Is Already Technical Debt
 
-| Layer | Trend | Key signal |
-|---|---|---|
-| **Hardware** | Cost floor collapsing for edge agents | Pi Zero + remote LLM = viable at €20 |
-| **Memory/Inference** | KV cache compression is the central efficiency problem | DeepSeek: 7% cache, 100x cost reduction |
-| **Model Architecture** | Depth reuse + hybrid attention gaining ground | Hyperloop Transformer: 50% fewer params, same quality |
-| **Multimodal** | Spatial grounding as a reasoning primitive | Bounding boxes in the reasoning chain, not just vision heads |
-| **Agent Tooling** | Interface wars: filesystem vs. MCP vs. raw API | Mirage, Sentrux, OpenClaw ecosystem fragmenting |
-| **Security** | PQC latency overhead is real; agent identity is unsolved | +20–30% TLS RTT; EBW as identity layer |
-| **Policy/Industrial** | Europe shifting from regulatory to deployment mode | Mistral + Airbus + ASML op-ed to EU Commission |
+**40 MCP servers. 40 schemas. Your agent picks the wrong one half the time.**
 
-The through-line: **efficiency, trust, and deployability** are the three axes on which the AI stack is being rebuilt. Raw capability is table stakes. The next two years of competition will be fought on how cheaply you can run, how verifiably you can operate, and how reliably your agents can be deployed in real production environments.
+Three separate builders looked at the agent tooling problem this week. Three different diagnoses. Same disease.
+
+**Diagnosis A — Mirage:** every backend should mount as a filesystem path. S3, Slack, GitHub, Gmail, Notion, Redis, MongoDB — all of them, one tree, bash verbs. LLMs were trained on more bash than any other interface. Stop teaching them new languages. Reuse the vocabulary they already know. 360 GitHub stars in 24 hours. Apache 2.0.
+
+**Diagnosis B — Sentrux:** agents are degrading your codebase session by session and you don't know it. Cycles accumulate. Names duplicate. Dependencies tangle. Sentrux scores your architecture from 0 to 10,000 across 52 languages, runs as an MCP server, and feeds structural feedback back to the agent mid-session so it self-corrects before the rot compounds.
+
+**Diagnosis C — Werner Bogula's hardware benchmark:** you don't need a €1,000 Mac Mini to run agentic workflows. A €20 Raspberry Pi Zero at 0.5W, paired with a remote LLM API, handles file management, calendar sync, automated planning, and recurring jobs. The lean install — 4,000 lines of Go vs. 400,000 lines of TypeScript in OpenClaw — teaches you more about what agents actually do than the Babylonic full stack.
+
+**First principles read:** if your agent needs 40 tool schemas to do anything useful, the abstraction is wrong. Complexity is a bug, not a feature. The right interface is the one the model already knows.
+
+**Fermi estimate of the sprawl cost:**
+- 10 MCP servers, each adding ~2,000 tokens to your context
+- At 100 requests/day, GPT-4o pricing
+- That's ~200K extra tokens/day in tool definitions alone
+- At current API rates: **~$200–600/month just to tell the model what tools exist**
+
+Mirage's filesystem abstraction eliminates most of that. Test it.
 
 ---
 
-*Synthesised from 10 LinkedIn posts, May 2026. Posts by Nikolas Markou, Yatin Arora, Dr. Ashish Bamania, Vlad Kuklev, Ajay Salunkhe, Eric Vyacheslav, Mitko Vasilev, Dr. Carsten Stöcker, Werner Bogula, and Arthur Mensch.*
+## Problem 5: You Haven't Priced In Quantum Overhead Yet
+
+**+20–30% TLS handshake latency. Not tomorrow. Already.**
+
+A practitioner ran the experiment. Hybrid TLS — ECDHE + CRYSTALS-Kyber-768 — on TLS 1.3. First assumption: MTU fragmentation. Wrong. The actual cause: **the handshake is just bigger.** Kyber adds public keys and ciphertext. Combined with certificates and TLS extensions, you've blown past neat packet boundaries. Multiple TCP segments. More packets in flight. Congestion window dependency. 20–30% more RTT.
+
+At scale this matters:
+- High-frequency trading: microsecond operations, cryptographic handshake now a competitive liability
+- Mobile APIs: already latency-sensitive, now worse
+- DNSSEC: PQC signatures routinely exceed the 512-byte UDP limit → TCP fallback for every DNSSEC-validated query → **this is a global DNS infrastructure redesign problem hiding as a footnote**
+
+Meanwhile, at the macro level: the European Business Wallet is moving from policy to infrastructure. Political agreement targeted for end of 2026. The EBW is a trust layer for companies, machines, and AI agents — verified identity, delegated authority, auditable actions, cross-border. The point is: **if your AI agent takes an action in the world and you can't produce a complete audit trail of who authorised it with what scope, you will have a regulatory problem in 24 months.**
+
+**Fermi estimate of your compliance gap:**
+- Does your agent have a documented authorisation model? (Most teams: no)
+- Can you produce per-action audit logs with human principal, scope, and timestamp? (Most teams: no)
+- How many jurisdictions is your agent operating in? Multiply by incoming regulatory surface.
+
+**What to test now:** set up a TLS 1.3 testbed with Kyber-768 hybrid exchange. Measure RTT vs. your ECDHE baseline across three network conditions: local, cross-region, mobile 4G. Do this before it's urgent. It is already becoming urgent.
+
+---
+
+## Problem 6: Europe Has Picked a Fight It Can Win
+
+**The B2C platform war is over. Europe lost. The industrial AI war is just starting.**
+
+Mistral AI, Airbus, ASML, Ericsson, Nokia, SAP, Siemens. Co-signed an op-ed to the European Commission. Met with von der Leyen.
+
+The message: stop regulating first, deploying second. We have the talent. We have the ecosystems. We have the demand. We are losing because we are slow, fragmented, and optimised for caution.
+
+Notice who signed it. Airbus builds planes. ASML makes the machines that make chips. These are not chatbot companies. The coalition is staking a claim on the **industrial AI stack** — semiconductors, robotics, manufacturing, logistics, energy, healthcare, defence — where Europe's structural assets still exist.
+
+Fermi read on the opportunity:
+- EU industrial GDP: ~€7 trillion
+- Even 1% efficiency improvement via AI automation: **€70B/year**
+- Current EU AI deployment rate vs. US: roughly 3–5 years behind
+- First-mover advantage window for compliant, auditable, sovereign AI tooling: **open right now, closing fast**
+
+If you are building AI infrastructure that is auditable, PQC-ready, and compatible with verifiable organisational identity — you have a €70B addressable market that US hyperscalers structurally cannot serve because they cannot meet European sovereignty requirements.
+
+That is the asymmetric bet.
+
+---
+
+## The Supply Chain Map
+
+| Layer | The Problem | The Number | The Bet |
+|---|---|---|---|
+| **Hardware** | Edge agents too expensive | Pi Zero + API = €20, 0.5W | Cost floor is gone |
+| **Memory** | KV cache bigger than model weights | 40 GB cache vs 35 GB weights at 128K | Compression ratios, not context specs |
+| **Architecture** | Parameter count is not quality | 50% fewer params, same benchmark | Depth reuse beats depth stacking |
+| **Multimodal** | Natural language can't point | 25 hrs/week lost to fuzzy references | Coordinates in the reasoning chain |
+| **Tooling** | 40 MCP schemas, 200K tokens/day overhead | ~€600/month just in tool definitions | Filesystem > MCP sprawl |
+| **Security** | PQC adds 20–30% handshake RTT | DNS TCP fallback = global infra problem | Measure now, not when mandated |
+| **Policy** | EU deploying instead of regulating | €70B/year at 1% industrial efficiency | Auditable, sovereign AI wins Europe |
+
+---
+
+## The Three Questions Worth Asking
+
+**1. What is the actual cost of the problem, not the solution?**
+Most teams optimise for slightly cheaper inference. The real question is: what is it costing you to *not* have structured agent context, *not* have prefix caching enabled, *not* have an authorisation audit trail? Quantify it. Be uncomfortable with the number.
+
+**2. Can you survive on the minimal viable stack?**
+A €20 Pi Zero + remote API + 4,000 lines of Go is a viable agentic infrastructure. Can you explain why you need 10x more complexity? If not, the complexity is the problem.
+
+**3. Are you building for the world that's coming or the one that's already here?**
+PQC overhead is already measurable. The EBW has a 2026 political deadline. The EU industrial market is open right now. The teams that benchmark PQC today, build audit trails today, and design for verifiable identity today will have a 12-month head start when it becomes mandatory. That head start is the moat.
+
+---
+
+**Efficiency. Trust. Deployability.**
+
+Pick two, and you're behind. The next two years go to whoever cracks all three.
+
+---
+
+*Synthesised from 10 LinkedIn posts, May 2026. Original posts by Nikolas Markou, Yatin Arora, Dr. Ashish Bamania, Vlad Kuklev, Ajay Salunkhe, Eric Vyacheslav, Mitko Vasilev, Dr. Carsten Stöcker, Werner Bogula, and Arthur Mensch.*
